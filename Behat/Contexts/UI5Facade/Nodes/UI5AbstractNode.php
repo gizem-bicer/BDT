@@ -6,6 +6,7 @@ use axenox\BDT\Behat\Events\AfterSubstep;
 use axenox\BDT\Behat\Events\BeforeSubstep;
 use axenox\BDT\DataTypes\StepStatusDataType;
 use axenox\BDT\Interfaces\FacadeNodeInterface;
+use axenox\BDT\Tests\Behat\Contexts\UI5Facade\ErrorManager;
 use Behat\Mink\Element\NodeElement;
 use Behat\Mink\Exception\DriverException;
 use exface\Core\DataTypes\StringDataType;
@@ -260,6 +261,7 @@ JS;
             $logbook?->addLine('**ERROR:** ' . $e->getMessage());
             $this->getBrowser()->captureScreenshot();
             $resultEvent = new AfterSubstep($title, $category, $e);
+            ErrorManager::getInstance()->logException($e, 'Substep', $this->getBrowser()->getWorkbench());
         }
         $dispatcher->dispatch($resultEvent);
         return $resultEvent;
