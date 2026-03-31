@@ -5,6 +5,7 @@ use axenox\BDT\Behat\Contexts\UI5Facade\UI5FacadeNodeFactory;
 use axenox\bdt\Behat\DatabaseFormatter\SubstepResult;
 use axenox\BDT\DataTypes\StepStatusDataType;
 use axenox\BDT\Exceptions\FacadeNodeException;
+use axenox\BDT\Exceptions\NoRowsFoundException;
 use axenox\BDT\Interfaces\FacadeNodeInterface;
 use axenox\BDT\Interfaces\TestResultInterface;
 use Behat\Gherkin\Node\TableNode;
@@ -221,7 +222,8 @@ class UI5DataTableNode extends UI5DataNode
         $parentResult = parent::checkTableWorksAsExpected($dataWidget, $logbook);
         
         $logbook->addIndent(1);
-
+        $sortingResult = $this->checkSortWorksAsExpected($dataWidget, false, $logbook);
+        
         /*
         // Test column caption filters
         foreach ($widget->getColumns() as $column) {
@@ -240,7 +242,7 @@ class UI5DataTableNode extends UI5DataNode
         */
 
         $logbook->addIndent(-1);
-        return $parentResult->isFailed() ? SubstepResult::createFailed(null, $logbook) : SubstepResult::createPassed($logbook);
+        return $parentResult->isFailed() || $sortingResult->isFailed() ? SubstepResult::createFailed(null, $logbook) : SubstepResult::createPassed($logbook);
     }
     
     protected function checkFilterWorksAsExpected(iFilterData $filter, iShowData $dataWidget, UI5FilterNode $filterNode, SubstepResult $result) : SubstepResult
@@ -422,11 +424,7 @@ class UI5DataTableNode extends UI5DataNode
      */
     public function filterColumn(string $caption, string $value): void
     {
-        $headerNode = $this->getColumnByCaption($caption);
-        $headerEl   = $headerNode->getNodeElement();
-        Assert::assertNotNull($headerEl, "Header element for '$caption' not found.");
-
-        $headerNode->clickHeader();
+        $this->clickButtonByCaption($caption);
 
         // Locate menu and input
         $page  = $this->getSession()->getPage();
@@ -457,6 +455,38 @@ class UI5DataTableNode extends UI5DataNode
         $this->getSession()->wait(1000, 'true');
     }
 
+    /**
+     * Opens the column context menu for the given caption.
+     * Returns the menu element ID so callers can target the correct menu
+     * among multiple menus that SAP UI5 keeps in the DOM simultaneously.
+     */
+    protected function openColumnCaptionMenu(string $columnCaption): string
+    {
+        $headerNode = $this->getColumnByCaption($columnCaption);
+        $headerId   = $headerNode->getNodeElement()->getAttribute('id');
+        $menuId     = $headerId . '-menu';
+
+        $headerNode->clickHeader();
+
+        $menuIdJs   = json_encode($menuId, JSON_UNESCAPED_UNICODE);
+        $appeared = $this->getSession()->wait(3000, <<<JS
+    (function() {
+        return document.getElementById({$menuIdJs}) !== null;
+    })()
+JS);
+
+        if (!$appeared) {
+            $headerNode->clickHeader();
+            $this->getSession()->wait(2000, <<<JS
+        (function() {
+            return document.getElementById({$menuIdJs}) !== null;
+        })()
+JS);
+        }
+
+        return $menuId;
+    }
+
     protected function resetFilterColumn(string $caption) :void
     {
         $this->filterColumn($caption, "");
@@ -471,7 +501,7 @@ class UI5DataTableNode extends UI5DataNode
         $cellValue = null;
         foreach ($rows as $row) {
             $cellValue = $this->getBrowser()->extractCellValueFromRow($row, $i);
-            if ($cellValue !== null) {
+            if ($cellValue !== null && preg_match('/[a-zA-Z0-9]/', $cellValue)) {
                 break;
             }
         }
@@ -516,5 +546,93 @@ class UI5DataTableNode extends UI5DataNode
         }
 
         return str_ends_with($text, $suffix);
+    }
+
+    private function checkSortWorksAsExpected(iShowData $dataWidget, bool $descending ,LogBookInterface $logbook) :TestResultInterface
+    {
+        $failed = false;
+        foreach ($dataWidget->getColumns() as $column) {
+            if ($column->isHidden() || !$column->isFilterable()) {
+                continue;
+            }
+            $testResult = $this->runAsSubstep(
+                function () use ($column, $descending, $logbook) {
+                    return $this->checkColumnSortWorksAsExpected($column, $descending, $logbook,);
+                },
+                'Sorting `' . $column->getCaption() . '` ' . ($descending ? 'DESC' : 'ASC'),
+                static::CATEGORY_SORTING,
+                $logbook
+            );
+            if ($testResult->isFailed()) {
+                $failed = true;
+                $this->reset();
+            }
+        }
+        return $failed ? SubstepResult::createFailed(null, $logbook) : SubstepResult::createPassed($logbook);
+    }
+    
+    private function checkColumnSortWorksAsExpected(DataColumn $column, string $descending, LogBookInterface $logbook): TestResultInterface
+    {
+        try {
+            $sortText = $descending ? $this->getBrowser()->getWorkbench()->getCoreApp()
+                ->getTranslator($this->getBrowser()->getLocale())
+                ->translate('GLOBAL.SORTING_DIRECTIONS.DESC') : $this->getBrowser()->getWorkbench()->getCoreApp()
+                ->getTranslator($this->getBrowser()->getLocale())
+                ->translate('GLOBAL.SORTING_DIRECTIONS.ASC');
+            $columnCaption = $column->getCaption();
+            $logbook->addLine('Sorting `' . $columnCaption . '` ' . $descending ? 'DESC' : 'ASC');
+            $menuId     = $this->openColumnCaptionMenu($columnCaption);
+            $this->selectItemFromColumnMenu($sortText, $menuId, $columnCaption);            
+
+            $this->getBrowser()->getWaitManager()->waitForPendingOperations(true, true, true);
+            $this->waitWhileBusy(30);
+            $this->browser->verifyTableSorting($this->getNodeElement(), $columnCaption, $this->getVisibleColumnIndex($column), $column->getDataType(), $descending);
+            return SubstepResult::createPassed($logbook);
+                        
+        } catch (NoRowsFoundException $e) {
+            $logbook->continueLine(' - skipped - no valid rows found');
+            return SubstepResult::createSkipped($e->getMessage());
+        }
+    }
+    
+    private function selectItemFromColumnMenu(string $sortText, string $menuId, string $columnCaption): void
+    {
+        $sortTextJs = json_encode($sortText, JSON_UNESCAPED_UNICODE);
+        $menuIdJs   = json_encode($menuId);
+        $this->getSession()->wait(3000, <<<JS
+    (function() {
+        var menu = document.getElementById({$menuIdJs});
+        return menu && menu.querySelectorAll('li.sapUiMnuItm').length > 0;
+    })()
+JS);
+
+        $menuItemId = $this->getSession()->evaluateScript(<<<JS
+    (function(menuId, sortText) {
+        var menu = document.getElementById(menuId);
+        if (!menu) return null;
+        var items = menu.querySelectorAll('li.sapUiMnuItm');
+        for (var i = 0; i < items.length; i++) {
+            if (items[i].textContent.trim() === sortText) {
+                if (!items[i].id) {
+                    items[i].id = '__bdt_sort_' + Date.now();
+                }
+                return items[i].id;
+            }
+        }
+        return null;
+    })({$menuIdJs}, {$sortTextJs})
+JS);
+        $menuItemIdJs = json_encode($menuItemId, JSON_UNESCAPED_UNICODE);
+        Assert::assertNotNull(
+            $menuItemId,
+            "Sort menu item '$sortText' not found in menu '$menuId' for column '$columnCaption'."
+        );
+
+        $this->getSession()->evaluateScript(<<<JS
+    (function(id) {
+        var el = document.getElementById(id);
+        if (el) el.click();
+    })({$menuItemIdJs})
+JS);
     }
 }

@@ -38,6 +38,7 @@ use PHPUnit\Framework\ExpectationFailedException;
 class UI5DataNode extends UI5AbstractNode
 {
     const CATEGORY_FILTERING = 'Filtering';
+    const CATEGORY_SORTING = 'Sorting';
     const CATEGORY_BUTTONS = 'Buttons';
 
     /* @var $hiddenFilters \exface\Core\Widgets\Filter[] */

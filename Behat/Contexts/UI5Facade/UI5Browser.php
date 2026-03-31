@@ -11,6 +11,7 @@ use axenox\BDT\Behat\Events\AfterPageVisited;
 use axenox\BDT\Behat\Events\AfterSubstep;
 use axenox\BDT\Behat\Events\BeforeSubstep;
 use axenox\BDT\Behat\Events\BeforeUserLoggedIn;
+use axenox\BDT\Exceptions\NoRowsFoundException;
 use axenox\BDT\Interfaces\FacadeNodeInterface;
 use axenox\BDT\Tests\Behat\Contexts\UI5Facade\ErrorManager;
 use Behat\Mink\Element\NodeElement;
@@ -1919,5 +1920,95 @@ JS
             ErrorManager::getInstance()->logException($e, $this->getWorkbench());
         }
         $dispatcher->dispatch(new AfterSubstep($substepResult, $title, 'screenshot'));
+    }
+
+    /**
+     * Verifies that the visible rows of a table are sorted by the given column.
+     *
+     * @param NodeElement $table
+     * @param string $columnCaption Visible column header label
+     * @param int $columnIndex
+     * @param DataTypeInterface $dataType One of 'string', 'number', 'date'
+     * @param bool $descending
+     */
+    public function verifyTableSorting(NodeElement $table, string $columnCaption, int $columnIndex, DataTypeInterface $dataType, bool $descending = false): void 
+    {
+        // Collect cell values from visible rows
+        $rows   = $this->getTableRows($table);
+        $values = [];
+        foreach ($rows as $row) {
+            $cell = $this->extractCellValueFromRow($row, $columnIndex);
+            if ($cell === null) {
+                continue;
+            }
+            $values[] = $cell;
+        }
+
+        if ($values === null) {
+            throw new NoRowsFoundException("No visible rows found to verify sorting.");            
+        }
+
+        if (count($values) < 2) {
+            return;
+        }
+
+        $violations = $this->findSortingViolationsViaJs($values, $dataType, $descending);
+
+        Assert::assertEmpty(
+            $violations,
+            sprintf(
+                'Table is not sorted %s by "%s". Violations: %s',
+                $descending ? 'descending' : 'ascending',
+                $columnCaption,
+                implode('; ', array_slice($violations, 0, 5))
+            )
+        );
+    }
+    
+    /**
+     * Delegates sort-order verification to the browser's Intl.Collator,
+     * which uses the same engine as SAP UI5's own sorting.
+     *
+     * @param string[]         $values
+     * @param DataTypeInterface $dataType
+     * @param bool             $descending
+     * @return string[]  violation messages, empty if correctly sorted
+     */
+    private function findSortingViolationsViaJs(
+        array $values,
+        DataTypeInterface $dataType,
+        bool $descending
+    ): array {
+        $valuesJson     = json_encode(array_values($values), JSON_UNESCAPED_UNICODE);
+        $locale = str_replace('_', '-', $this->getLocale());
+        $descendingJs   = $descending ? 'true' : 'false';
+
+        // Tell Intl.Collator to use numeric collation for number/date types
+        $numericJs = ($dataType instanceof NumberDataType
+            || $dataType instanceof DateDataType)
+            ? 'true' : 'false';
+
+        $result = $this->getSession()->evaluateScript(<<<JS
+(function(values, locale, descending, numeric) {
+    var collator = new Intl.Collator(locale, {
+        sensitivity: 'base',
+        numeric: numeric
+    });
+
+    var violations = [];
+    for (var i = 0; i < values.length - 1; i++) {
+        var cmp = collator.compare(values[i], values[i + 1]);
+        var ok  = descending ? (cmp >= 0) : (cmp <= 0);
+        if (!ok) {
+            violations.push(
+                'Row ' + (i + 1) + ' ("' + values[i] + '") vs Row ' + (i + 2) + ' ("' + values[i + 1] + '")'
+            );
+        }
+    }
+    return violations;
+})({$valuesJson}, '{$locale}', {$descendingJs}, {$numericJs})
+JS);
+
+        return is_array($result) ? $result : [];
     }
 }
