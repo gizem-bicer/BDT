@@ -403,7 +403,7 @@ class UI5WaitManager
      * 1. XHR (network) errors
      * 2. UI5 MessageManager errors
      * 3. JavaScript errors
-     * 4. Popup (.exf-error)
+     * 4. Popup (.exfw-error)
      *
      * @throws \RuntimeException|\Throwable If any errors are found
      */
@@ -768,14 +768,14 @@ JS);
 
     private function checkPopupErrors()
     {
-        // 4) Popup (.exf-error) - primary source
+        // 4) Popup (.exfw-error) - primary source
         $popupErrors = $this->getSession()->evaluateScript(<<<'JS'
 (function () {
     function isVisible(el) {
         return !!(el && (el.offsetWidth || el.offsetHeight || el.getClientRects().length));
     }
 
-    var nodes = Array.prototype.slice.call(document.querySelectorAll('.exf-error'));
+    var nodes = Array.prototype.slice.call(document.querySelectorAll('.exfw-error'));
     var visible = nodes.filter(isVisible);
 
     return visible.map(function (el) {
@@ -784,7 +784,7 @@ JS);
 
         return {
             type: 'Popup',
-            message: text || 'Error popup detected (.exf-error) but no text found',
+            message: text || 'Error popup detected (.exfw-error) but no text found',
             details: (el.getAttribute('data-exf-error-details') || '').trim(),
             id: el.id || ''
         };
